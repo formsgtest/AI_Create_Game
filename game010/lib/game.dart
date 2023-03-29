@@ -2,26 +2,177 @@ import 'dart:math';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
 import 'package:flame/game.dart';
-
 import 'package:flutter/material.dart';
 import 'package:flame/collisions.dart';
 import 'package:flame/parallax.dart';
-import 'package:hive/hive.dart';
-import 'package:flame_audio/flame_audio.dart';
 import 'overlays/game_over_menu.dart';
+
+class EnemyManager extends Component with HasGameRef<SpaceShooterGame> {
+  final SpaceShooterGame game;
+  final List<Enemy> _enemies = [];
+  final List<SuicideEnemy> _suicideEnemies = [];
+  double enemyRate = 0.3;
+  double enemySpeed = 200;
+  double enemyCreateRate = 0.4;
+  double suicideEnemyCreateRate = 0.1;
+  final double suicideEnemyIncreaseScore = 100;
+  EnemyManager(this.game);
+
+  void spawnEnemy() {
+    final enemy = Enemy();
+    enemy.position = Vector2(
+      Random().nextDouble() * game.size.x,
+      0,
+    );
+    game.add(enemy);
+    _enemies.add(enemy);
+  }
+
+  void spawnSuicideEnemy() {
+    final enemy = SuicideEnemy();
+    enemy.position = Vector2(180, 0);
+    game.add(enemy);
+    _suicideEnemies.add(enemy);
+  }
+
+  @override
+  void update(double dt) {
+    enemyRate += dt;
+    if (enemyRate >= enemyCreateRate) {
+      enemyRate = 0;
+      if (game._score > suicideEnemyIncreaseScore) {
+        enemyCreateRate = 0.3;
+        suicideEnemyCreateRate = 0.6;
+      }
+      if (Random().nextDouble() < suicideEnemyCreateRate) {
+        spawnSuicideEnemy();
+      } else {
+        spawnEnemy();
+      }
+    }
+  }
+
+  void reset() {
+    _enemies.forEach((enemy) {
+      enemy.reset();
+    });
+    _suicideEnemies.forEach((enemy) {
+      enemy.reset();
+    });
+  }
+}
+
+class Enemy extends SpriteComponent
+    with CollisionCallbacks, HasGameRef<SpaceShooterGame> {
+  final double _speed = 150;
+
+  @override
+  Future<void> onLoad() async {
+    await super.onLoad();
+    sprite = await gameRef.loadSprite('enemy.png');
+    width = 35;
+    height = 40;
+    anchor = Anchor.center;
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    position += Vector2(0, _speed * dt);
+    if (position.y > gameRef.size.y) {
+      gameRef.remove(this);
+    }
+  }
+
+  @override
+  void onMount() {
+    super.onMount();
+    final shape = CircleHitbox.relative(
+      0.8,
+      parentSize: size,
+      position: size / 2,
+      anchor: Anchor.center,
+    );
+    add(shape);
+  }
+
+  @override
+  void onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
+    super.onCollision(intersectionPoints, other);
+    if (other is Player) {
+      gameRef.remove(this);
+      other.health -= 10;
+    }
+  }
+
+  void reset() {
+    position = Vector2(
+      Random().nextDouble() * gameRef.size.x,
+      0,
+    );
+  }
+}
+
+class SuicideEnemy extends SpriteComponent
+    with CollisionCallbacks, HasGameRef<SpaceShooterGame> {
+  final double _speed = 200;
+
+  @override
+  Future<void> onLoad() async {
+    await super.onLoad();
+    sprite = await gameRef.loadSprite('enemy.png');
+    width = 35;
+    height = 40;
+    anchor = Anchor.center;
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    moveTowardsPlayer(dt);
+  }
+
+  void moveTowardsPlayer(double dt) {
+    final player = gameRef._player;
+    final diff = player.position - position;
+    final direction = diff.normalized();
+    position += direction * _speed * dt;
+  }
+
+  @override
+  void onMount() {
+    super.onMount();
+    final shape = CircleHitbox.relative(
+      0.8,
+      parentSize: size,
+      position: size / 2,
+      anchor: Anchor.center,
+    );
+    add(shape);
+  }
+
+  @override
+  void onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
+    super.onCollision(intersectionPoints, other);
+    if (other is Player) {
+      gameRef.remove(this);
+      other.health -= 20;
+    }
+  }
+
+  void reset() {
+    position = Vector2(180, 0);
+  }
+}
 
 class SpaceShooterGame extends FlameGame
     with HasCollisionDetection, PanDetector, TapDetector {
   bool _isAlreadyLoaded = false;
-  late Enemy _enemy;
-  late EnemyManager _enemyManager;
   late Player _player;
-  late Bullet _bullet;
+  late EnemyManager _enemyManager;
   late TextComponent _scoreText;
   int _score = 0;
   late TextComponent _playerhealth;
-  int _health = 100;
-  late AudioPlayerComponent _audioPlayerComponent;
 
   @override
   Future<void> onLoad() async {
@@ -38,16 +189,13 @@ class SpaceShooterGame extends FlameGame
         velocityMultiplierDelta: Vector2(0, 1.5),
       );
       add(parallax);
-
-      _enemy = Enemy();
-      add(_enemy);
-      _enemyManager = EnemyManager();
-      add(_enemyManager);
       _player = Player();
-      _bullet = Bullet();
-
-      add(_bullet);
       add(_player);
+      _enemyManager = EnemyManager(this);
+      _enemyManager.spawnEnemy();
+
+      _enemyManager.spawnSuicideEnemy();
+
       _scoreText = TextComponent(
         text: 'Score: 0',
         position: Vector2(10, 10),
@@ -73,9 +221,6 @@ class SpaceShooterGame extends FlameGame
         ),
       );
       add(_playerhealth);
-      _audioPlayerComponent = AudioPlayerComponent();
-      add(_audioPlayerComponent);
-      _audioPlayerComponent.playBgm();
     }
     _isAlreadyLoaded = true;
   }
@@ -88,88 +233,32 @@ class SpaceShooterGame extends FlameGame
   @override
   void update(double dt) {
     super.update(dt);
-
+    _enemyManager.update(dt);
+    _playerhealth.text = 'Health: ${_player.health}';
     _scoreText.text = 'Score: $_score';
-    _playerhealth.text = 'Health: $_health';
-    if (_health <= 0) {
-      _health = 0;
-      _playerhealth.text = 'Health: $_health';
+    if (_player.health <= 0) {
+      _playerhealth.text = 'Health: ${_player.health}';
       overlays.add(GameOverMenu.id);
       pauseEngine();
-      _audioPlayerComponent.stopBgm();
     }
   }
 
-  @override
-  void render(Canvas canvas) {
-    super.render(canvas);
-  }
-
-  Future<void> updateScore(int score) async {
-    final box = await Hive.openBox('scoreBox');
-    _score = score;
-    await box.put('score', _score);
-  }
-
-  void addScore(int score) async {
-    _score += score;
-    await updateScore(_score);
-  }
-
-  void reduceHealth(int health) {
-    _health -= health;
-    _playerhealth.text = 'Health: $_health';
-  }
-
-  void addHealth(int health) {
-    _health += health;
-    _playerhealth.text = 'Health: $_health';
-  }
-
-  @override
-  void onDetach() {
-    super.onDetach();
-    _audioPlayerComponent.stopBgm();
-  }
-
   void reset() {
-    _player.reset();
-    _enemyManager.reset();
-
+    _player.health = 100;
     _score = 0;
+    _enemyManager.reset();
+    _player.reset();
     _scoreText.text = 'Score: $_score';
-    _health = 100;
-    _playerhealth.text = 'Health: $_health';
-    _playerhealth.textRenderer = TextPaint(
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 20,
-        fontFamily: 'BungeeInline',
-      ),
-    );
-
-    children.whereType<Enemy>().forEach((enemy) {
-      enemy.removeFromParent();
-    });
-
-    children.whereType<Bullet>().forEach((bullet) {
-      bullet.removeFromParent();
-    });
-  }
-
-  void stopBgm() {
-    _audioPlayerComponent.stopBgm();
-  }
-
-  void playBgm() {
-    _audioPlayerComponent.playBgm();
+    _playerhealth.text = 'Health: ${_player.health}';
   }
 }
 
 class Player extends SpriteComponent
     with CollisionCallbacks, HasGameRef<SpaceShooterGame> {
-  double shootRate = 0.5;
+  int health = 100;
+  double shootRate = 0.3;
   double lastShootTime = 0;
+  double speed = 200;
 
   @override
   Future<void> onLoad() async {
@@ -179,26 +268,6 @@ class Player extends SpriteComponent
     width = 60;
     height = 70;
     anchor = Anchor.center;
-  }
-
-  void shoot() {
-    final bullet = Bullet();
-    bullet.position = position;
-    gameRef.add(bullet);
-  }
-
-  void move(Vector2 delta) {
-    position.add(delta);
-  }
-
-  @override
-  void update(double dt) {
-    super.update(dt);
-    lastShootTime += dt;
-    if (lastShootTime >= shootRate) {
-      lastShootTime = 0;
-      shoot();
-    }
   }
 
   @override
@@ -214,15 +283,37 @@ class Player extends SpriteComponent
   }
 
   @override
-  void onCollision(Set<Vector2> points, PositionComponent other) {
-    super.onCollision(points, other);
+  void onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
+    super.onCollision(intersectionPoints, other);
     if (other is Enemy) {
-      gameRef.camera.shake(intensity: 20);
-      gameRef._audioPlayerComponent.playSfx('error.wav');
+      gameRef.camera.shake(intensity: 10);
+    } else if (other is SuicideEnemy) {
+      gameRef.camera.shake(intensity: 10);
+    }
+  }
+
+  void move(Vector2 delta) {
+    position.add(delta);
+  }
+
+  void shoot() {
+    final bullet = Bullet();
+    bullet.position = position;
+    gameRef.add(bullet);
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    lastShootTime += dt;
+    if (lastShootTime >= shootRate) {
+      lastShootTime = 0;
+      shoot();
     }
   }
 
   void reset() {
+    health = 100;
     position = Vector2(gameRef.size.x / 2, gameRef.size.y - 100);
   }
 }
@@ -253,11 +344,14 @@ class Bullet extends SpriteComponent
   }
 
   @override
-  void onCollision(Set<Vector2> points, PositionComponent other) {
-    super.onCollision(points, other);
+  void onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
+    super.onCollision(intersectionPoints, other);
     if (other is Enemy) {
-      gameRef.remove(this);
-      gameRef.addScore(10);
+      gameRef._score += 10;
+      gameRef.remove(other);
+    } else if (other is SuicideEnemy) {
+      gameRef._score += 20;
+      gameRef.remove(other);
     }
   }
 
@@ -271,138 +365,8 @@ class Bullet extends SpriteComponent
       gameRef.remove(this);
     }
   }
-}
-
-class EnemyManager extends Component with HasGameRef<SpaceShooterGame> {
-  double enemyRate = 0.5;
-
-  double enemySpeed = 100;
-
-  double enemyCreateRate = 0.5;
-
-  @override
-  void update(double dt) {
-    super.update(dt);
-    enemyRate -= dt;
-    enemyCreateRate -= dt;
-    if (enemyRate <= 0) {
-      enemyRate = 0.5;
-      enemySpeed += 10;
-    }
-    if (enemyCreateRate <= 0) {
-      enemyCreateRate = 0.5;
-      createEnemy();
-    }
-  }
-
-  void createEnemy() {
-    final enemy = Enemy();
-    enemy.position = Vector2(
-      Random().nextDouble() * gameRef.size.x,
-      0,
-    );
-    gameRef.add(enemy);
-  }
 
   void reset() {
-    enemyRate = 0.5;
-    enemySpeed = 100;
-    enemyCreateRate = 0.5;
-  }
-}
-
-class Enemy extends SpriteComponent
-    with CollisionCallbacks, HasGameRef<SpaceShooterGame> {
-  @override
-  Future<void> onLoad() async {
-    await super.onLoad();
-    sprite = await gameRef.loadSprite('enemy.png');
-    width = 60;
-    height = 70;
-    anchor = Anchor.center;
-  }
-
-  @override
-  void onMount() {
-    super.onMount();
-
-    final shape = CircleHitbox.relative(
-      0.8,
-      parentSize: size,
-      position: size / 2,
-      anchor: Anchor.center,
-    );
-    add(shape);
-  }
-
-  @override
-  void onCollision(Set<Vector2> points, PositionComponent other) {
-    super.onCollision(points, other);
-    if (other is Bullet) {
-      gameRef.remove(this);
-    } else if (other is Player) {
-      gameRef.remove(this);
-      gameRef.reduceHealth(10);
-    }
-  }
-
-  @override
-  void update(double dt) {
-    super.update(dt);
-
-    position.add(Vector2(0, 100 * dt));
-
-    if (position.y > gameRef.size.y) {
-      gameRef.remove(this);
-    }
-  }
-
-  final _hpText = TextComponent(
-    text: '10 HP',
-    textRenderer: TextPaint(
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 12,
-        fontFamily: 'BungeeInline',
-      ),
-    ),
-  );
-
-  @override
-  void render(Canvas canvas) {
-    super.render(canvas);
-    _hpText.render(canvas);
-  }
-}
-
-class AudioPlayerComponent extends Component with HasGameRef<SpaceShooterGame> {
-  @override
-  Future<void>? onLoad() async {
-    FlameAudio.bgm.initialize();
-    await FlameAudio.audioCache.loadAll([
-      'background_music.mp3',
-      'blastoff.wav',
-    ]);
-
-    return super.onLoad();
-  }
-
-  void playBgm() {
-    FlameAudio.bgm.play(
-      'background_music.mp3',
-      volume: 0.25,
-    );
-  }
-
-  void stopBgm() {
-    FlameAudio.bgm.stop();
-  }
-
-  void playSfx(String filename) {
-    FlameAudio.play('blastoff.wav', volume: 0.3);
-  }
-
-  void playGameOver() {
-    FlameAudio.play('Game Over.ogg', volume: 0.3);
+    gameRef.remove(this);
   }
 }
